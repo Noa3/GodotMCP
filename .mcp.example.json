@@ -1,0 +1,9 @@
+{
+  "servers": {
+    "godot-universal": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "godot-universal-mcp"]
+    }
+  }
+}
