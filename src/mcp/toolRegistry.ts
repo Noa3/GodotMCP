@@ -9,6 +9,7 @@ import { getProjectTools } from './tools/projectTools';
 import { getRuntimeTools } from './tools/runtimeTools';
 import { getSceneTools } from './tools/sceneTools';
 import { getScriptTools } from './tools/scriptTools';
+import { logger } from '../utils/logger';
 
 export type RiskLevel = 'safe' | 'write' | 'destructive';
 
@@ -56,13 +57,22 @@ export class ToolRegistry {
   public async call(name: string, params: unknown): Promise<ToolResult> {
     const tool = this.tools.get(name);
     if (!tool) {
+      logger.warn({ tool: name }, `[UNKNOWN_TOOL] Called unknown tool: ${name}`);
       return errorResult(createErrorPayload(ERROR_CODES.TOOL_NOT_AVAILABLE, `Unknown tool: ${name}`));
     }
 
     try {
+      logger.info({ tool: name, risk: tool.riskLevel }, `[TOOL_CALL] ${tool.title} (params: ${JSON.stringify(params).slice(0, 200)})`);
       const parsed = tool.schema.parse(params ?? {});
-      return await tool.execute(parsed);
+      const result = await tool.execute(parsed);
+      if (result.isError) {
+        logger.warn({ tool: name }, `[TOOL_FAIL] ${name}: ${JSON.stringify(result).slice(0, 500)}`);
+      } else {
+        logger.info({ tool: name }, `[TOOL_OK] ${name} completed successfully`);
+      }
+      return result;
     } catch (error) {
+      logger.error({ tool: name, error: error instanceof Error ? error.message : String(error) }, `[TOOL_ERROR] ${name}`);
       return formatCaughtError(error);
     }
   }

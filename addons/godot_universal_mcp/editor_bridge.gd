@@ -247,13 +247,8 @@ func _tool_set_node_property(params: Dictionary) -> Dictionary:
 	if node == null:
 		return _err("INVALID_PROJECT", "Node not found: " + node_path)
 	
-	# Use UndoRedo for proper undo support
-	var undo_redo := get_undo_redo()
-	undo_redo.create_action("MCP: Set property " + property)
-	undo_redo.add_do_property(node, property, value)
-	undo_redo.add_undo_property(node, property, node.get(property))
-	undo_redo.commit_action()
-	
+	# Use set() directly since we're not in an EditorPlugin context
+	node.set(property, value)
 	return {"ok": true, "result": {"node": node_path, "property": property, "value": value}}
 
 func _tool_get_output() -> Dictionary:

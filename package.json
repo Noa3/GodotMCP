@@ -18,15 +18,30 @@
     "clean": "rm -rf dist",
     "prepublishOnly": "npm run build"
   },
-  "keywords": ["godot", "mcp", "game-dev", "ai", "typescript"],
+  "keywords": [
+    "godot",
+    "mcp",
+    "game-dev",
+    "ai",
+    "typescript"
+  ],
   "author": "Paul Schindler-Saefkow",
   "license": "MIT",
-  "files": ["dist", "addons", "README.md", "LICENSE", "NOTICE.md"],
-  "engines": {"node": ">=20.0.0"},
+  "files": [
+    "dist",
+    "addons",
+    "README.md",
+    "LICENSE",
+    "NOTICE.md"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.24.0",
     "commander": "^12.0.0",
     "pino": "^9.0.0",
+    "pino-pretty": "^13.1.3",
     "uuid": "^10.0.0",
     "zod": "^3.22.0"
   },

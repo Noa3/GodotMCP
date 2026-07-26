@@ -3,8 +3,10 @@ import net from 'node:net';
 import { setTimeout as delay } from 'node:timers/promises';
 import { v4 as uuidv4 } from 'uuid';
 import type { Logger } from 'pino';
-import { type GodotRequest, type GodotResponse, GodotResponseSchema } from './protocol';
+import type { GodotRequest, GodotResponse } from './protocol';
+import { GodotResponseSchema } from './protocol';
 import { ERROR_CODES } from '../utils/errors';
+import { logger } from '../utils/logger';
 
 export type GodotConnectionState = 'disconnected' | 'connecting' | 'connected' | 'degraded';
 
@@ -29,6 +31,9 @@ export class GodotClient extends EventEmitter {
   private reconnectTimer: NodeJS.Timeout | null = null;
   private state: GodotConnectionState = 'degraded';
   private manualDisconnect = false;
+  private _hasEverConnected = false;
+  private _reconnectAttempts = 0;
+  private readonly _maxReconnectAttempts = 5;
 
   public constructor(private readonly options: GodotClientOptions) {
     super();
@@ -48,8 +53,16 @@ export class GodotClient extends EventEmitter {
       return;
     }
 
+    // Stop reconnecting if we've never connected and hit max attempts
+    if (!this._hasEverConnected && this._reconnectAttempts >= this._maxReconnectAttempts) {
+      logger.error({ client: this.options.clientName, attempts: this._reconnectAttempts }, `[GIVE_UP] ${this.options.clientName} bridge unreachable after ${this._reconnectAttempts} attempts. Is the Godot editor running with the MCP plugin enabled?`);
+      this.setState('degraded');
+      return;
+    }
+
     this.manualDisconnect = false;
     this.setState('connecting');
+    logger.info({ client: this.options.clientName, attempt: this._reconnectAttempts + 1 }, `[CONNECTING] ${this.options.clientName} bridge -> ${this.options.host}:${this.options.port}`);
 
     await new Promise<void>((resolve) => {
       const socket = net.createConnection({ host: this.options.host, port: this.options.port });
@@ -59,10 +72,15 @@ export class GodotClient extends EventEmitter {
         this.buffer = '';
         this.attachSocket(socket);
         this.setState('connected');
+        this._hasEverConnected = true;
+        this._reconnectAttempts = 0;
+        logger.info({ client: this.options.clientName, port: this.options.port }, `[CONNECTED] ${this.options.clientName} bridge connected on ${this.options.host}:${this.options.port}`);
+        this.emit('connected', { client: this.options.clientName, port: this.options.port });
         resolve();
       });
       socket.on('error', (error) => {
-        this.options.logger.debug({ err: error, client: this.options.clientName }, 'Godot TCP connect failed');
+        this._reconnectAttempts++;
+        this.options.logger.debug({ err: error, client: this.options.clientName, attempt: this._reconnectAttempts }, 'Godot TCP connect failed');
         socket.destroy();
         this.socket = null;
         this.setState('degraded');
@@ -91,6 +109,8 @@ export class GodotClient extends EventEmitter {
     }
 
     this.setState('disconnected');
+    logger.info({ client: this.options.clientName }, `[DISCONNECTED] ${this.options.clientName} bridge`);
+    this.emit('disconnected', { client: this.options.clientName });
     await delay(0);
   }
 
@@ -194,10 +214,12 @@ export class GodotClient extends EventEmitter {
     if (this.manualDisconnect || this.reconnectTimer) {
       return;
     }
+    const interval = this.options.reconnectIntervalMs ?? 5_000;
+    logger.info({ client: this.options.clientName, attempt: this._reconnectAttempts + 1, intervalMs: interval }, `[RECONNECT] Scheduling reconnect for ${this.options.clientName} bridge in ${interval}ms (attempt ${this._reconnectAttempts + 1}/${this._maxReconnectAttempts})`);
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       void this.connect();
-    }, this.options.reconnectIntervalMs ?? 3_000);
+    }, interval);
   }
 
   private setState(state: GodotConnectionState): void {
