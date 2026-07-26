@@ -15,3 +15,20 @@ export_credentials.cfg
 .mono/
 data_*/
 mono_crash.*.json
+
+# Node.js
+node_modules/
+dist/
+*.js.map
+
+# MCP local state
+.godot-universal-mcp/logs/
+.godot-universal-mcp/cache/
+.godot-universal-mcp/tmp/
+
+# TypeScript
+*.d.ts.map
+
+# OS files
+.DS_Store
+Thumbs.db

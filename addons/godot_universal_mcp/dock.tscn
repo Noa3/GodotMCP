@@ -1,0 +1,30 @@
+[gd_scene load_steps=2 format=3 uid="uid://dock_godot_universal_mcp"]
+
+[ext_resource type="Script" path="res://addons/godot_universal_mcp/dock.gd" id="1"]
+
+[node name="GodotUniversalMCPDock" type="VBoxContainer"]
+script = ExtResource("1")
+
+[node name="Title" type="Label" parent="."]
+text = "Godot Universal MCP"
+
+[node name="Status" type="Label" parent="."]
+name = "Status"
+text = "Status: Initializing..."
+
+[node name="Port" type="Label" parent="."]
+name = "Port"
+text = "Port: 9500"
+
+[node name="CopyConfig" type="Button" parent="."]
+name = "CopyConfig"
+text = "Copy MCP Config"
+
+[node name="Separator" type="HSeparator" parent="."]
+
+[node name="DiagLabel" type="Label" parent="."]
+text = "Diagnostics:"
+
+[node name="Diagnostics" type="RichTextLabel" parent="."]
+name = "Diagnostics"
+size_flags_vertical = 3
