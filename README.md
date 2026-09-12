@@ -1,135 +1,157 @@
 # Godot Universal MCP
 
-Godot Universal MCP is a local-first Model Context Protocol server and Godot addon pair for AI-assisted Godot 4 development. It connects MCP-capable clients such as GitHub Copilot to a running Godot editor and optional debug runtime bridge.
+Local-first MCP tooling for Godot: a **TypeScript/Node.js stdio server** plus a
+**GDScript editor addon** and an optional development-runtime bridge.
 
-## What is Godot Universal MCP?
+**The addon does not require C# or a .NET Godot build.** A game that uses C# still
+needs Godot .NET and the corresponding SDK to compile its own code. Native node,
+scene and exported-property inspection uses Godot's APIs rather than assuming a
+particular game scripting language.
 
-The project provides:
-
-- A **Node.js MCP server** that speaks stdio to your AI client.
-- A **Godot editor plugin** that exposes scene, node, project, and play-mode operations.
-- An optional **runtime autoload** for debug-time inspection during gameplay.
-- Configuration, docs, and examples for reproducible setup.
-
-## Quick start
-
-### Windows PowerShell
-
-```powershell
-git clone <repository-url>
-cd GodotMCP
-.\scripts\install.ps1
-```
-
-Then copy `addons\godot_universal_mcp` into your Godot project, enable the plugin, and point your MCP-compatible client at the generated `.mcp.json`.
-
-### Linux bash
-
-```bash
-git clone <repository-url>
-cd GodotMCP
-./scripts/install.sh
-```
-
-Then copy `addons/godot_universal_mcp` into your Godot project, enable the plugin, and configure your MCP client to launch `npx -y godot-universal-mcp`.
-
-## Architecture overview
+## Architecture
 
 ```text
-AI client <-> MCP stdio server <-> localhost TCP <-> Godot editor/runtime
+MCP client -- stdio / MCP --> Node.js server
+                              | authenticated, loopback-only NDJSON TCP
+                              +--> GDScript editor bridge (default 9500)
+                              +--> GDScript runtime bridge (default 9501, opt-in)
 ```
 
-- The MCP server handles tool registration, request validation, and response formatting.
-- The editor bridge exposes safe editor automation on `127.0.0.1:9500` by default.
-- The runtime bridge exposes debug-only inspection on `127.0.0.1:9501` by default.
+Keep the public MCP protocol in the official Node SDK. The internal TCP bridge
+is not itself a public MCP endpoint. See [the bridge guide](docs/BRIDGE_GUIDE.md)
+for the language boundary, security model, migration notes and limitations.
 
-For more detail, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+## Run this checkout
 
-## VS Code / GitHub Copilot setup
+Use Node.js 20 or newer and a Godot 4 editor. The integration matrix includes
+Godot 4.3 standard and 4.4.1 .NET; it is a compatibility test matrix, not a claim
+that these are the newest or recommended engine releases. Check the actual CI
+results for the revision being installed.
 
-Use either `.mcp.example.json` or `.vscode/mcp.example.json` as your starting point:
+```sh
+git clone https://github.com/Noa3/GodotMCP.git
+cd GodotMCP
+npm ci
+npm run build
+```
+
+When evaluating a pull request, check out its branch **before** building.
+Copy the complete `addons/godot_universal_mcp` directory into your game's
+`addons/` directory. Enable **Godot Universal MCP** under **Project > Project
+Settings > Plugins**, then open a scene. Do not mix files from different addon
+revisions.
+
+Configure your client to launch the built file with absolute paths. Example
+**VS Code** `.vscode/mcp.json` (replace both paths):
 
 ```json
 {
   "servers": {
     "godot-universal": {
       "type": "stdio",
-      "command": "npx",
-      "args": ["-y", "godot-universal-mcp"]
+      "command": "node",
+      "args": ["/absolute/path/to/GodotMCP/dist/cli/index.js"],
+      "env": {
+        "GODOT_PROJECT_ROOT": "/absolute/path/to/your-game"
+      }
     }
   }
 }
 ```
 
-See [docs/COPILOT_SETUP.md](docs/COPILOT_SETUP.md) for a guided flow.
+On Windows, forward-slash absolute paths such as `C:/Projects/...` avoid JSON
+backslash escaping. Other MCP clients may use a different outer configuration
+key; the command, arguments and environment are the same. No `serve` subcommand
+is needed. Using `npx` to launch a registry release does **not** test this checkout.
+This guide makes no assumption that a matching npm release has been published.
 
-## How to enable the Godot plugin
+The dock's **Copy Config** button generates this VS Code configuration after
+`godot_universal_mcp/server_entry` is set in Project Settings to the absolute
+built `dist/cli/index.js` path. The project token is not put on the clipboard.
 
-1. Copy `addons/godot_universal_mcp` into your Godot project's `addons/` directory.
-2. Open **Project > Project Settings > Plugins**.
-3. Enable **Godot Universal MCP**.
-4. Confirm the dock appears and the editor bridge starts.
-5. Optionally enable the runtime autoload for gameplay inspection.
+## Authentication and write access
 
-More details: [docs/GODOT_PLUGIN.md](docs/GODOT_PLUGIN.md).
+On first activation, the editor creates a random project-local credential at
+`.godot/godot_universal_mcp/token`. The Node server reads that game's token before
+each request. `GODOT_PROJECT_ROOT` must point to the game, not this server's repo.
+The `.godot` cache must stay private and out of version control. An optional
+`GODOT_MCP_TOKEN` override must be the same in the editor and server environments.
 
-## Safety model
+The MCP server defaults to read-only. To allow changes in a project you trust,
+first initialize its config:
 
-Godot Universal MCP is designed for local development use:
+```sh
+node dist/cli/index.js init-project /absolute/path/to/your-game
+```
 
-- Bridges bind to `127.0.0.1` by default.
-- Runtime inspection is intended for debug/editor builds only.
-- Remote access and eval-style capabilities should remain disabled unless explicitly needed.
-- AI-generated actions should be reviewed before applying destructive changes.
+Then manually edit **only these fields** in the generated
+`.godot-universal-mcp/config.json`, retaining the other settings:
 
-See [SECURITY.md](SECURITY.md) and [docs/SECURITY.md](docs/SECURITY.md).
+```json
+{"security": {"allowWrite": true, "trustMode": "trusted"}}
+```
 
-## Tool categories
+All registered write/destructive tools, including editor saves and process
+launch/control, require both fields. Tool annotations are hints for clients, not
+an alternative to this authorization. Possession of the raw bridge token grants
+bridge access; this is **not a sandbox against other processes running as you**.
+Only open and run projects you trust.
 
-| Category | Example tools | Notes |
-| --- | --- | --- |
-| Editor inspection | `editor.get_status`, `editor.get_scene_tree`, `editor.get_node` | Best for scene understanding and project context. |
-| Editor actions | `editor.set_node_property`, `editor.save_all`, `editor.open_scene` | Intended for local editor automation. |
-| Project control | `editor.run_project`, `editor.stop_project`, `editor.filesystem_scan` | Helps coordinate iteration loops. |
-| Runtime inspection | `runtime.get_status`, `runtime.get_tree`, `runtime.get_property` | Debug-only visibility into the running game. |
-| Runtime control | `runtime.set_property`, `runtime.pause`, `runtime.resume`, `runtime.screenshot` | Powerful tools; use conservatively. |
+## Runtime inspection
 
-See [docs/TOOL_REFERENCE.md](docs/TOOL_REFERENCE.md) for the full reference.
+Enable **Runtime bridge (next game run)** in the dock and launch the game using
+the editor or an editor binary. The addon manages its own autoload entry.
+The runtime listener is disabled by default and refuses normal export-template
+builds, including debug exports. It remains responsive while gameplay is paused.
+Changing the runtime checkbox takes effect on the next game run.
 
-## Troubleshooting
+## Main bridge-backed MCP tools
 
-- Plugin missing in Godot: verify the addon path and re-scan the filesystem.
-- MCP client cannot connect: confirm the plugin is enabled and the editor bridge port is available.
-- Runtime tools unavailable: ensure the runtime autoload is enabled in a debug/editor build.
+| Public tool | What it actually does |
+| --- | --- |
+| `godot_editor_status`, `godot_editor_capabilities` | Read engine/project identity and supported operations. |
+| `godot_editor_tree`, `godot_editor_get_node` | Inspect the current, possibly unsaved edited scene. |
+| `godot_editor_set_node_property` | Typed property edit through editor Undo/Redo; trusted writes required. |
+| `godot_editor_save_all`, `godot_editor_filesystem_scan` | Request scene saves or a filesystem scan. |
+| `godot_runtime_status`, `godot_runtime_tree`, `godot_runtime_perf` | Inspect the running game through the opt-in bridge. |
+| `godot_runtime_pause`, `godot_runtime_resume` | Pause/resume without pausing the bridge itself. |
+| `godot_runtime_screenshot` | PNG JSON payload, longest edge capped at 1024; unavailable headlessly. |
+| `godot_runtime_logs` | Bounded stdout/stderr from a process launched by this server. |
 
-Full guide: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
+Editor nodes use paths relative to the edited root (`.` means the root).
+Runtime nodes use paths relative to `/root`. Missing/unimplemented functionality
+returns explicit errors: `godot_editor_output` does not yet capture the editor
+console. Empty log arrays must not be treated as proof of an error-free game.
+The existing project/file/offline scene/script tools remain available; their
+textual analysis is not a complete Godot or C# compiler.
 
-## FAQ
+## Development checks
 
-### Does this bundle Godot?
+```sh
+npm run typecheck
+npm run lint
+npm test
+npm run build
+node --test tests/client.test.cjs
+python3 tests/bridge_smoke.py --godot /absolute/path/to/godot
+```
 
-No. You must install Godot separately.
+For the compiled C# fixture, use a Godot .NET binary and the matching .NET SDK:
 
-### Does it work in production builds?
+```sh
+python3 tests/bridge_smoke.py --godot /path/to/godot-dotnet --csharp --sdk-version 4.4.1
+```
 
-The runtime bridge is intended for debug/editor builds, not production deployment.
+The smoke test creates a temporary project and exercises real editor/runtime
+TCP connections, authentication, exported properties, typed writes, batching and
+pause/resume. It does not replace GUI undo testing, rendered screenshot testing,
+or exported-build validation. CI runs the engine fixtures separately from the
+TypeScript/Jest checks.
 
-### Do I need VS Code?
+## Documentation and license
 
-No. Any MCP-compatible client can launch the stdio server.
+[Bridge guide and migration](docs/BRIDGE_GUIDE.md) ·
+[Security](SECURITY.md) · [Roadmap](ROADMAP.md) ·
+[Contributing](CONTRIBUTING.md)
 
-### Is remote access enabled by default?
-
-No. The default posture is localhost-only and safety-first.
-
-## Additional documentation
-
-- [Install on Windows](docs/INSTALL_WINDOWS.md)
-- [Install on Linux](docs/INSTALL_LINUX.md)
-- [Runtime bridge](docs/RUNTIME_BRIDGE.md)
-- [Roadmap](ROADMAP.md)
-- [Contribution guide](CONTRIBUTING.md)
-
-## License
-
-Licensed under the MIT License. See `LICENSE`, `NOTICE.md`, and `THIRD_PARTY_NOTICES.md`.
+MIT License. See `LICENSE`, `NOTICE.md`, and `THIRD_PARTY_NOTICES.md`.

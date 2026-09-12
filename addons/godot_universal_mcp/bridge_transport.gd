@@ -28,6 +28,9 @@ static func read_token(create: bool = false) -> String:
 		return ""
 	if DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(TOKEN_PATH.get_base_dir())) != OK:
 		return ""
+	# Lock the directory before creating a file that will contain the secret.
+	if OS.get_name() != "Windows" and FileAccess.set_unix_permissions(TOKEN_PATH.get_base_dir(), 448) != OK:
+		return ""
 	var bytes := Crypto.new().generate_random_bytes(32)
 	if bytes.size() != 32:
 		return ""
@@ -35,11 +38,11 @@ static func read_token(create: bool = false) -> String:
 	var file := FileAccess.open(TOKEN_PATH, FileAccess.WRITE)
 	if file == null:
 		return ""
+	if OS.get_name() != "Windows" and FileAccess.set_unix_permissions(TOKEN_PATH, 384) != OK:
+		file.close()
+		return ""
 	file.store_string(token)
 	file.close()
-	# Godot's .godot directory is local cache, not a distributable project setting.
-	if OS.get_name() != "Windows":
-		FileAccess.set_unix_permissions(TOKEN_PATH, 384)
 	return token
 
 func start(port: int, handler: Callable, token: String) -> Error:
