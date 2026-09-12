@@ -1,19 +1,11 @@
-# Godot Universal MCP Addon
+# Godot Universal MCP addon
 
-This addon exposes lightweight editor and runtime TCP bridges for the `godot-universal-mcp` Node.js server.
+This GDScript addon belongs to the Node/TypeScript adapter in **Noa3/GodotMCP**. It does not use Coding-Solo's server or a game-specific `Tools/Godot` adapter. A normal Godot project needs no C# for this addon; C# gameplay still needs Godot .NET.
 
-## Included files
+Build the server checkout, then run `node dist/cli/index.js install "/path/to/game" --enable` from that checkout. The installer copies the whole addon and generates `.godot-universal-mcp/client.json` and the project's MCP configuration. The dock copies those actual paths; it refuses to guess when configuration is missing or belongs to another project.
 
-- `plugin.gd` — Godot editor plugin entrypoint.
-- `editor_bridge.gd` — localhost editor bridge for scene and project tools.
-- `runtime_bridge.gd` — optional autoload for debug runtime inspection.
-- `dock.tscn` / `dock.gd` — editor dock for status and setup shortcuts.
+Runtime inspection is opt-in. The plugin owns its autoload, restores it after reload and removes it when explicitly disabled. Do not add a second static autoload entry. Stop and restart an already-running game after changing runtime settings.
 
-## Install
+Editor and runtime properties, input and snapshot providers have separate opt-in project settings. The adapter also requires trusted-write configuration for mutations. Possession of the raw project token remains privileged bridge access, not a sandbox.
 
-1. Copy `addons/godot_universal_mcp` into your Godot 4 project.
-2. Open **Project > Project Settings > Plugins**.
-3. Enable **Godot Universal MCP**.
-4. If you want runtime inspection, enable the autoload from the dock or plugin helper.
-
-See the repository `README.md` and `docs/GODOT_PLUGIN.md` for full setup guidance.
+See the server repository's README and `docs/BRIDGE_GUIDE.md` for setup, permissions, bounded schemas, readiness and feature limits. Tool names are generated from `tool_manifest.json`; never infer tool availability from a private handler name alone.

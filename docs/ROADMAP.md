@@ -1,10 +1,3 @@
-# Documentation Roadmap
+# Roadmap
 
-This document mirrors the repository roadmap with a docs-specific angle.
-
-## Next documentation milestones
-
-- End-to-end setup guide with screenshots.
-- Migration notes for future protocol or tool changes.
-- Godot version compatibility matrix.
-- More detailed examples for 2D, 3D, and UI iteration workflows.
+The maintained roadmap is [../ROADMAP.md](../ROADMAP.md). Avoid duplicate status lists here.

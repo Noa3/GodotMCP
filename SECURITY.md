@@ -1,54 +1,19 @@
-# Security Policy
+# Security policy
 
-## Supported versions
+## Reporting
 
-This project is pre-1.0. Security fixes are applied on the default supported branch for the latest release line. A successful test run is not a complete security audit.
+Report suspected vulnerabilities privately to the maintainer or through GitHub private vulnerability reporting if enabled. Include affected revision, reproduction steps, impact and mitigation. Do not post credentials, project tokens or personal game data in public issues.
 
-## Reporting a vulnerability
+## Development-only boundary
 
-Please do not open public GitHub issues for suspected security vulnerabilities.
-Report issues privately to the maintainers with a description, affected surfaces,
-reproduction steps and suggested mitigation. Until a dedicated security contact
-is published, use GitHub private vulnerability reporting if enabled or contact
-the maintainer directly. Do not include project credentials or private assets in
-reports.
+This is pre-1.0 local development tooling. Both Godot listeners bind to 127.0.0.1. The adapter accepts only loopback hosts and reads a project-specific token. Godot requires debug/editor-binary runtime use; export templates must not expose a listener. These guards are not a sandbox against project code or another process running with the user's permissions.
 
-## Security boundaries
+Possession of the raw token independently authorizes the private bridge. Node's read-only/trusted-write policy cannot constrain a different token-holding client. Property/input features additionally require explicit Godot settings. Getters, setters, importers, scripts and opt-in snapshot providers can execute project code. Only connect trusted projects and clients.
 
-Editor and runtime listeners bind to `127.0.0.1` and authenticate requests with a
-random, project-local token. The credential is stored under
-`.godot/godot_universal_mcp/token`; keep the cache private and out of version
-control. Unix token directories/files are restricted to their owner during
-creation. Windows relies on the project directory's existing access controls.
-The optional `GODOT_MCP_TOKEN` override must be configured in both process
-environments and must not be committed to project settings.
+Runtime presses use an explicit InputMap allowlist and expire within one second. Property edits require supported types; editor writes use Undo/Redo and saving remains separate. The transport bounds messages/clients/work per poll and blocks reentrant dispatch caused by editor progress dialogs. Unknown mutation outcomes are never automatically replayed.
 
-The Node MCP server defaults to read-only and checks `security.allowWrite` and
-`security.trustMode` for all registered write/destructive tools. MCP annotations
-are only client hints. **Possession of the raw bridge token grants private bridge
-access independently of the Node server's read-only setting.** This is not a
-sandbox against other processes running under the same user account.
+Ordinary project launch is not isolated validation and may use the game's real saves. The automated repository fixtures instead use temporary projects and user data. There is no arbitrary-shell validation tool or eval bridge command. A future validation API must preserve those boundaries.
 
-Runtime inspection is explicitly opt-in and is limited to development runs with
-an editor binary, not normal release or debug export templates. Disabling the
-runtime checkbox takes effect on the next game run. Keep the export guards.
+The installer rejects symlink targets and invalid client JSON, retains backups and preserves unrelated client entries. Close the editor before changing installation. It is not a defense against concurrent hostile filesystem manipulation by the same user.
 
-Only use trusted projects. Project launch executes project code. Even property
-inspection and assignment can invoke script-defined getters/setters; editor
-scripts may already execute when a project is opened. No general-purpose eval
-operation is provided by the rewritten bridges. Local authentication is not
-permission to expose these ports remotely or deploy them in a multi-tenant
-service.
-
-TCP frame, queue, client and traversal limits reduce accidental resource
-exhaustion; they are not a complete defense against hostile project code.
-Timeouts do not guarantee an operation was cancelled. Mutations are not
-replayed automatically; inspect state before retrying an uncertain operation.
-
-## Remaining assurance work
-
-Dedicated export-template tests, GUI Undo/Redo and rendered screenshot tests,
-Windows engine tests, dependency vulnerability remediation and a broader
-security review remain separate work. Review the exact revision's CI results
-and dependency audit before distributing a release. See
-[the bridge guide](docs/BRIDGE_GUIDE.md) for migration and known limitations.
+Dependency audit findings and a broader review of inherited offline tools remain open. Passing CI demonstrates only the tested behaviors, not complete security or compatibility. See the [roadmap](ROADMAP.md).

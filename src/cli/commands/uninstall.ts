@@ -1,42 +1,37 @@
-import { readFile, rm, writeFile } from 'node:fs/promises';
+import { readFile, rm } from 'node:fs/promises';
 import path from 'node:path';
+import { assertLocalTarget, editPlugin, editSetting, projectDirectory, readJsonObject, removeOwnedAutoloads, writeWithBackup } from './projectSettings';
+import { SERVER_KEY } from './mcpConfig';
 
-export interface UninstallCommandOptions {
-  removeConfig?: boolean;
-  removeAutoload?: boolean;
-}
-
-function removePluginSetting(content: string): string {
-  return content
-    .replace(/,?\s*"res:\/\/addons\/godot_universal_mcp\/plugin\.cfg"/g, '')
-    .replace(/enabled=PackedStringArray\(\s*\)/g, 'enabled=PackedStringArray()');
-}
-
-function removeAutoloadSetting(content: string): string {
-  return content.replace(/^GodotUniversalMcpBridge="\*res:\/\/addons\/godot_universal_mcp\/bridge\.gd"\n?/gm, '');
-}
+export interface UninstallCommandOptions { removeConfig?: boolean; removeAutoload?: boolean; }
 
 export async function runUninstall(projectPath: string, options: UninstallCommandOptions = {}): Promise<{ removed: string[] }> {
-  const resolvedProjectPath = path.resolve(projectPath);
-  const removed: string[] = [];
-
-  await rm(path.join(resolvedProjectPath, 'addons', 'godot_universal_mcp'), { recursive: true, force: true });
-  removed.push('addons/godot_universal_mcp');
-
-  if (options.removeConfig) {
-    await rm(path.join(resolvedProjectPath, '.godot-universal-mcp'), { recursive: true, force: true });
-    await rm(path.join(resolvedProjectPath, '.vscode', 'mcp.json'), { force: true });
-    removed.push('.godot-universal-mcp', '.vscode/mcp.json');
+  const root = await projectDirectory(projectPath);
+  const projectFile = path.join(root, 'project.godot');
+  const addon = path.join(root, 'addons/godot_universal_mcp');
+  const localDir = path.join(root, '.godot-universal-mcp');
+  const vscodeFile = path.join(root, '.vscode/mcp.json');
+  for (const target of [addon, localDir, vscodeFile]) await assertLocalTarget(root, target);
+  let text = removeOwnedAutoloads(editPlugin(await readFile(projectFile, 'utf8'), false));
+  text = editSetting(text, 'godot_universal_mcp', 'runtime_enabled', () => 'false');
+  const vscode = options.removeConfig ? await readJsonObject(vscodeFile) : undefined;
+  // Always remove our references before deleting their files. The old flag remains CLI-compatible.
+  await writeWithBackup(projectFile, text);
+  await rm(addon, { recursive: true, force: true });
+  const removed = ['addons/godot_universal_mcp', 'project.godot MCP settings'];
+  if (options.removeConfig && vscode) {
+    const servers = vscode.servers as Record<string, unknown> | undefined;
+    if (servers && typeof servers === 'object' && !Array.isArray(servers)) {
+      const entry = servers[SERVER_KEY] as { env?: { GODOT_PROJECT_ROOT?: string } } | undefined;
+      // Never remove a same-named server configured for another project.
+      if (entry?.env?.GODOT_PROJECT_ROOT && path.resolve(entry.env.GODOT_PROJECT_ROOT) === root) {
+        delete servers[SERVER_KEY];
+        await writeWithBackup(vscodeFile, `${JSON.stringify(vscode, null, 2)}\n`);
+        removed.push('.vscode/mcp.json MCP entry');
+      }
+    }
+    await rm(localDir, { recursive: true, force: true });
+    removed.push('.godot-universal-mcp');
   }
-
-  if (options.removeAutoload) {
-    const projectFilePath = path.join(resolvedProjectPath, 'project.godot');
-    let content = await readFile(projectFilePath, 'utf8');
-    content = removePluginSetting(content);
-    content = removeAutoloadSetting(content);
-    await writeFile(projectFilePath, content, 'utf8');
-    removed.push('project.godot settings');
-  }
-
   return { removed };
 }

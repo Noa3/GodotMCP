@@ -1,27 +1,5 @@
-# Install on Linux
+# Linux installation
 
-## Prerequisites
+Follow the [canonical local installation](../README.md#one-supported-installation-route). Use `node dist/cli/index.js install "/absolute/path/to/game" --enable` after `npm ci` and `npm run build` in the server checkout. Close Godot before installation or upgrade.
 
-- Linux with a recent glibc-based distribution
-- Node.js 20+
-- Godot 4.3+
-- An MCP-capable editor or agent
-
-## Steps
-
-1. Clone this repository.
-2. From the repository root, generate an MCP config:
-
-```bash
-./scripts/install.sh
-```
-
-3. Copy `addons/godot_universal_mcp` into your Godot project.
-4. Enable the plugin from **Project > Project Settings > Plugins**.
-5. Configure your MCP client to launch `npx -y godot-universal-mcp`.
-
-## Validation
-
-- The dock should appear after enabling the plugin.
-- Godot should log that the editor bridge is listening on `127.0.0.1:9500`.
-- Your MCP client should successfully call `editor.get_status`.
+The installer resolves the local Node executable and adapter path, preserves other MCP entries, and produces the same configuration that the Godot dock copies. No npm registry publication or game-specific script is assumed. Reinstall after moving the checkout or game. Runtime opt-in is managed by the plugin, not a second manual autoload.

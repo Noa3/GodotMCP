@@ -32,12 +32,28 @@ jobs:
             flavor: dotnet
             asset: Godot_v4.4.1-stable_mono_linux_x86_64.zip
             args: '--csharp --sdk-version 4.4.1'
+          - version: '4.3'
+            flavor: rendered-mcp
+            asset: Godot_v4.3-stable_linux.x86_64.zip
+            args: '--rendered --mcp'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
         if: matrix.flavor == 'dotnet'
         with:
           dotnet-version: '8.0.x'
+      - uses: actions/setup-node@v4
+        if: matrix.flavor == 'rendered-mcp'
+        with:
+          node-version: '20'
+          cache: npm
+      - name: Build actual MCP adapter for rendered end-to-end test
+        if: matrix.flavor == 'rendered-mcp'
+        run: |
+          npm ci
+          npm run build
+          sudo apt-get update -qq
+          sudo apt-get install -y xvfb libgl1-mesa-dri
       - name: Download official Godot build
         env:
           VERSION: ${{ matrix.version }}
@@ -49,5 +65,13 @@ jobs:
           test -n "$binary"
           chmod +x "$binary"
           echo "GODOT_BIN=$binary" >> "$GITHUB_ENV"
+      - name: Shared value budget and path regression
+        run: python3 tests/codec_smoke.py --godot "$GODOT_BIN"
       - name: Real editor and runtime bridge smoke test
+        if: matrix.flavor != 'rendered-mcp'
         run: python3 tests/bridge_smoke.py --godot "$GODOT_BIN" ${{ matrix.args }}
+      - name: Rendered MCP end-to-end test
+        if: matrix.flavor == 'rendered-mcp'
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: xvfb-run -a python3 tests/bridge_smoke.py --godot "$GODOT_BIN" ${{ matrix.args }}

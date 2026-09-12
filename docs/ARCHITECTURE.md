@@ -1,34 +1,23 @@
 # Architecture
 
-Godot Universal MCP is split into three layers:
+## Universal core
 
-1. **MCP server (Node.js / TypeScript)**
-   - Exposes tools over stdio for MCP-compatible clients.
-   - Validates requests, enforces safety checks, and formats responses.
-2. **Editor bridge (Godot addon)**
-   - Runs inside the Godot editor.
-   - Listens on localhost TCP and serves scene, project, and editor operations.
-3. **Runtime bridge (autoload)**
-   - Runs inside the game in debug/editor contexts.
-   - Exposes read-mostly runtime inspection plus carefully gated mutation tools.
+An MCP client communicates over stdio with the installed Node/TypeScript server. Godot editor/runtime endpoints use a private bounded NDJSON protocol over loopback, authenticated with a project-scoped token. The addon itself is GDScript and has no .NET requirement.
 
-## Data flow
+`addons/godot_universal_mcp/tool_manifest.json` is the authoritative bridge/workflow catalog. TypeScript expands it into strict JSON schemas and Zod validators; GDScript validates the same parameters from the same file. `scripts/generate-tool-reference.cjs` generates the reference document, checked for drift in CI. Legacy offline tools are separately registered and remain visible in MCP tools/list.
 
-```text
-AI client <-> MCP stdio server <-> localhost TCP <-> Godot editor/runtime
-```
+The installer resolves the actual adapter/package path and game directory. Both client configurations are generated once and stored locally; the dock copies them. Consumer launchers, scene names and gameplay services do not enter the core.
 
-## Core design principles
+## Godot-native integration
 
-- **Local-first**: bridges bind to `127.0.0.1` by default.
-- **Explicit capability boundaries**: editor and runtime tools are separate.
-- **Safe defaults**: runtime access, eval, and remote access remain off unless enabled.
-- **Portable setup**: no custom Godot build is required.
+Editor operations use EditorInterface, edited SceneTree nodes and EditorUndoRedoManager. Runtime input uses InputMap and InputEventAction; visual capture observes RenderingServer frame lifecycle and active viewport cameras. Start/stop workflows verify identity, session and runtime readiness. Transport reentrancy is blocked when editor progress dialogs pump nested events.
 
-## Directory overview
+## Optional project semantics
 
-- `addons/godot_universal_mcp/` — Godot plugin, bridges, dock UI.
-- `docs/` — setup, architecture, security, and troubleshooting guides.
-- `examples/` — minimal Godot projects for validation.
-- `scripts/` — cross-platform install helpers.
-- `src/` — MCP server implementation.
+Snapshot providers join `godot_mcp_snapshot_provider` and expose `get_mcp_snapshot`. They read existing gameplay systems rather than maintaining a second simulation. They are trusted project code and must be fast/read-only. Automated actions come from a project allowlist, never fixed game-specific names.
+
+## Explicit boundaries
+
+The plugin alone owns its runtime autoload. The Node server enforces read-only/trusted-write policy; Godot applies additional property/input gates. Token possession authorizes raw bridge access and is not a same-user sandbox. Calls are not automatically replayed after uncertain timeouts.
+
+Future isolated validation must accept named, reviewed project checks and separate user data. It must not accept shell strings or pretend ordinary play mode is a test result. Automatic port discovery, live Logger capture and richer native transactions remain separate work.
