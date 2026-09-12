@@ -1,20 +1,9 @@
-# Security Model
+# Security model
 
-## Trust boundaries
+See [the repository policy](../SECURITY.md) and [BRIDGE_GUIDE.md](BRIDGE_GUIDE.md#permissions-and-lifecycle).
 
-- The MCP client is trusted to issue tool requests.
-- The TypeScript server validates requests before forwarding them.
-- Godot bridges accept only localhost TCP connections by default.
+Loopback plus a random project token protects against accidental/unauthenticated clients, not against another process that can read that token. Raw bridge access is independent of Node read-only settings. Project getters, setters, providers and importers can execute code.
 
-## Recommended defaults
+Input requires an explicit InputMap allowlist and bounded press duration. Property writes require separate opt-in and typed conversion. There is no eval tool or arbitrary-shell validation API. Ordinary managed project launch can still use normal game saves and is not isolated testing.
 
-- Keep `allow_remote` disabled.
-- Keep `allow_eval` disabled.
-- Enable runtime access only for local debug work.
-- Do not expose bridge ports on shared or untrusted networks.
-
-## Operational guidance
-
-- Treat runtime mutation tools as development-only features.
-- Avoid attaching the runtime bridge to production builds.
-- Review editor prompts and AI-generated actions before applying destructive changes.
+Malformed data, wrong project identity, oversized messages and incompatible protocol versions fail explicitly. Unsupported diagnostics are not empty-success evidence. Dependency audit remediation and a wider security review remain required before a production claim.

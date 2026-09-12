@@ -1,21 +1,22 @@
 param(
-    [string]$TargetConfig = (Join-Path (Get-Location) '.mcp.json')
+    [Parameter(Mandatory=$true)][string]$ProjectPath,
+    [switch]$Enable,
+    [switch]$Autoload
 )
-
-$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$RootDir = Split-Path -Parent $ScriptDir
-$SourceConfig = Join-Path $RootDir '.mcp.example.json'
-$TargetDir = Split-Path -Parent $TargetConfig
-
-if (-not (Test-Path $TargetDir)) {
-    New-Item -ItemType Directory -Path $TargetDir -Force | Out-Null
+$ErrorActionPreference = 'Stop'
+$Project = (Resolve-Path $ProjectPath).Path
+$Root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
+Push-Location $Root
+try {
+    npm ci
+    if ($LASTEXITCODE -ne 0) { throw 'npm ci failed' }
+    npm run build
+    if ($LASTEXITCODE -ne 0) { throw 'Build failed' }
+    $Arguments = @('dist/cli/index.js', 'install', $Project)
+    if ($Enable) { $Arguments += '--enable' }
+    if ($Autoload) { $Arguments += '--autoload' }
+    & node @Arguments
+    if ($LASTEXITCODE -ne 0) { throw 'Installation failed' }
+} finally {
+    Pop-Location
 }
-
-Copy-Item -Path $SourceConfig -Destination $TargetConfig -Force
-
-Write-Host "Wrote MCP config to: $TargetConfig"
-Write-Host "Next steps:"
-Write-Host "  1. Open your Godot 4 project."
-Write-Host "  2. Copy addons/godot_universal_mcp into the project."
-Write-Host "  3. Enable the plugin from Project Settings > Plugins."
-Write-Host "  4. Run your MCP-compatible client with the generated config."

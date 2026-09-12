@@ -6,19 +6,20 @@ import { randomUUID } from 'node:crypto';
 export const PLUGIN_PATH = 'res://addons/godot_universal_mcp/plugin.cfg';
 export const AUTOLOAD_PATH = '*res://addons/godot_universal_mcp/runtime_bridge.gd';
 
-/** Refuse ambiguous files instead of trying to repair or truncate user configuration. */
 export async function readJsonObject(file: string): Promise<Record<string, unknown>> {
   let text: string;
   try { text = await readFile(file, 'utf8'); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {}; throw error; }
-  const data: unknown = JSON.parse(text.replace(/^\uFEFF/, ''));
+  let data: unknown;
+  try { data = JSON.parse(text.replace(/^\uFEFF/, '')); }
+  catch { throw new Error(`Invalid JSON in ${file}; JSONC comments/trailing commas are not modified automatically`); }
   if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error(`Expected a JSON object in ${file}`);
   return data as Record<string, unknown>;
 }
 
 export async function assertLocalTarget(root: string, target: string): Promise<void> {
   const relative = path.relative(root, target);
-  if (relative.startsWith('..') || path.isAbsolute(relative)) throw new Error('Installation target escapes the project');
+  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) throw new Error('Installation target escapes the project');
   let current = root;
   for (const part of relative.split(path.sep).filter(Boolean)) {
     current = path.join(current, part);
@@ -44,7 +45,9 @@ export async function writeWithBackup(file: string, content: string): Promise<vo
 
 export function editSetting(text: string, section: string, key: string, transform: (value: string | undefined) => string | undefined): string {
   const lines = text.replace(/\r\n/g, '\n').split('\n');
-  let start = lines.findIndex((line) => line.trim() === `[${section}]`);
+  const starts = lines.map((line, index) => line.trim() === `[${section}]` ? index : -1).filter((index) => index >= 0);
+  if (starts.length > 1) throw new Error(`Duplicate section ${section}`);
+  const start = starts[0] ?? -1;
   if (start < 0) {
     const value = transform(undefined);
     return value === undefined ? text : `${text.trimEnd()}\n\n[${section}]\n${key}=${value}\n`;

@@ -1,7 +1,7 @@
 @tool
 extends RefCounted
 
-## Private NDJSON transport, not the public MCP transport. Main-thread, bounded I/O.
+## Private NDJSON transport; all I/O is bounded and main-thread only.
 const MAX_CLIENTS := 8
 const MAX_REQUEST_BYTES := 1024 * 1024
 const MAX_RESPONSE_BYTES := 8 * 1024 * 1024
@@ -9,11 +9,11 @@ const IO_BUDGET := 64 * 1024
 const REQUEST_BUDGET := 8
 const IDLE_TIMEOUT_MS := 120000
 const TOKEN_PATH := "res://.godot/godot_universal_mcp/token"
-
 var _server: TCPServer
 var _clients: Array[Dictionary] = []
 var _handler: Callable
 var _token := ""
+var _polling := false
 var last_error := "Not started"
 
 static func read_token(create: bool = false) -> String:
@@ -32,7 +32,6 @@ static func read_token(create: bool = false) -> String:
 		return _token_error("Project token is missing; start the editor addon first")
 	if DirAccess.make_dir_recursive_absolute(directory) != OK:
 		return _token_error("Cannot create the project token directory")
-	# The directory protects both the final credential and Godot's safe-save temp file.
 	if OS.get_name() != "Windows" and FileAccess.set_unix_permissions(directory, 448) != OK:
 		return _token_error("Cannot restrict token directory permissions")
 	var bytes := Crypto.new().generate_random_bytes(32)
@@ -45,7 +44,7 @@ static func read_token(create: bool = false) -> String:
 	file.store_string(token)
 	file.flush()
 	var write_error := file.get_error()
-	# In editor safe-save mode the final path does not exist until close() renames it.
+	# Editor safe-save creates the final path only on close.
 	file.close()
 	if write_error != OK:
 		return _token_error("Could not write the project token")
@@ -85,21 +84,30 @@ func stop() -> void:
 	_token = ""
 
 func poll() -> void:
-	if not is_listening():
+	# Editor progress dialogs can pump a nested main loop during play/save/import.
+	# Reentering here would replay a mutation before its receive buffer was committed.
+	if _polling or not is_listening():
 		return
+	_polling = true
+	_poll_clients()
+	_polling = false
+
+func _poll_clients() -> void:
 	for _index in range(MAX_CLIENTS):
-		if not _server.is_connection_available():
+		if not is_listening() or not _server.is_connection_available():
 			break
 		var peer := _server.take_connection()
 		if _clients.size() >= MAX_CLIENTS:
 			peer.disconnect_from_host()
 		else:
 			_clients.append({"peer": peer, "rx": PackedByteArray(), "tx": PackedByteArray(), "seen": Time.get_ticks_msec()})
-	for index in range(_clients.size() - 1, -1, -1):
-		var state: Dictionary = _clients[index]
+	# A handler may stop the server during a nested editor event; iterate a snapshot.
+	for state in _clients.duplicate():
+		if not is_listening():
+			break
 		if not _poll_client(state):
 			state.peer.disconnect_from_host()
-			_clients.remove_at(index)
+			_clients.erase(state)
 
 func _poll_client(state: Dictionary) -> bool:
 	var peer: StreamPeerTCP = state.peer
@@ -117,7 +125,6 @@ func _poll_client(state: Dictionary) -> bool:
 			return false
 		rx.append_array(data[1])
 		state.seen = Time.get_ticks_msec()
-	# Work left by REQUEST_BUDGET must also run when no new bytes arrive.
 	for _index in range(REQUEST_BUDGET):
 		var newline := rx.find(10)
 		if newline < 0:
@@ -126,9 +133,12 @@ func _poll_client(state: Dictionary) -> bool:
 			return false
 		var line := rx.slice(0, newline).get_string_from_utf8().strip_edges()
 		rx = rx.slice(newline + 1)
+		state.rx = rx # Consume before invoking any editor or project callback.
 		if line.is_empty():
 			continue
 		var response := _handle_line(line)
+		if not is_listening():
+			return false
 		var encoded := (JSON.stringify(response) + "\n").to_utf8_buffer()
 		if encoded.size() > MAX_RESPONSE_BYTES:
 			encoded = (JSON.stringify(_response(str(response.id), _error("RESPONSE_TOO_LARGE", "Response exceeded the limit"))) + "\n").to_utf8_buffer()
@@ -156,8 +166,12 @@ func _handle_line(line: String) -> Dictionary:
 		return _response("invalid", _error("VALIDATION_ERROR", "Invalid request id"))
 	if not (msg.get("token") is String) or msg.get("token") != _token:
 		return _response(id, _error("AUTH_REQUIRED", "Missing or incorrect project bridge token"))
+	if msg.get("protocolVersion", 1) != 1:
+		return _response(id, _error("VALIDATION_ERROR", "Unsupported bridge protocol version"))
 	if msg.get("type") != "request" or not (msg.get("tool") is String) or not (msg.get("params") is Dictionary):
 		return _response(id, _error("VALIDATION_ERROR", "Expected type=request, tool string and params object"))
+	if msg.tool.is_empty() or msg.tool.length() > 128:
+		return _response(id, _error("VALIDATION_ERROR", "Invalid command length"))
 	var result: Dictionary = _handler.call(msg.tool, msg.params)
 	return _response(id, result)
 

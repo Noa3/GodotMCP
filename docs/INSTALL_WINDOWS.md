@@ -1,28 +1,9 @@
-# Install on Windows
+# Windows installation
 
-## Prerequisites
-
-- Windows 10 or 11
-- Node.js 20+
-- Godot 4.3+
-- A client with MCP support, such as VS Code with GitHub Copilot
-
-## Steps
-
-1. Clone this repository.
-2. Open PowerShell in the repository root.
-3. Generate an MCP config:
+Follow the [canonical local installation](../README.md#one-supported-installation-route). From the built server checkout:
 
 ```powershell
-.\scripts\install.ps1
+node dist/cli/index.js install "D:\Games\MyGame" --enable
 ```
 
-4. Copy `addons\godot_universal_mcp` into your Godot project.
-5. In Godot, open **Project > Project Settings > Plugins** and enable **Godot Universal MCP**.
-6. Point your MCP-capable client at `.mcp.json` or copy `.vscode\mcp.example.json` into your editor configuration.
-
-## Validation
-
-- Confirm the dock appears in the Godot editor.
-- Confirm the editor bridge listens on port `9500`.
-- Run your MCP client and call `editor.get_status`.
+Replace that example path with your actual game directory. The installer uses the real Node executable and handles spaces through argument arrays; it does not invoke `npx.cmd` or an unverified package. Close Godot before install/upgrade. The dock copies generated local configuration for VS Code or generic MCP clients. Reinstall after moving the checkout or game.

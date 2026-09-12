@@ -1,28 +1,13 @@
-# GitHub Copilot Setup
+# MCP client setup
 
-## VS Code
+Use [the local installer](../README.md#one-supported-installation-route). It merges a `godot` server entry into your game's `.vscode/mcp.json` without deleting other servers. The Godot dock's default Copy Config returns the same entry.
 
-1. Install GitHub Copilot and ensure MCP support is enabled in your environment.
-2. Copy `.vscode/mcp.example.json` to the location expected by your VS Code MCP integration.
-3. Open your Godot project and enable the addon.
-4. Start a Copilot session and verify `godot-universal` appears as an available server.
+For clients using `mcpServers`, select **Generic MCP client** in the dock, or run:
 
-## Recommended workflow
-
-- Use editor tools for scene and project inspection.
-- Use runtime tools only while running a local debug build.
-- Keep unsafe capabilities disabled unless a task truly requires them.
-
-## Example configuration
-
-```json
-{
-  "servers": {
-    "godot-universal": {
-      "type": "stdio",
-      "command": "npx",
-      "args": ["-y", "godot-universal-mcp"]
-    }
-  }
-}
+```sh
+node dist/cli/index.js mcp-config --target copilot-cli --project-path "/path/to/game"
 ```
+
+The generated executable and project paths are installation-specific. After moving a checkout, regenerate them instead of editing a guessed npm command. In strict-JSON-only installer mode, existing JSONC is rejected without overwriting it; merge the generated server entry manually into a JSONC client file.
+
+Confirm `godot_editor_status` returns the correct project/session, not just that a TCP port is open. Other MCP implementations must have separate configuration names and matching addons.
