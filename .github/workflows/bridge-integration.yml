@@ -1,0 +1,53 @@
+name: Bridge integration
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  tcp-client:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - run: npm ci
+      - run: node --test tests/client.test.cjs
+  godot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - version: '4.3'
+            flavor: standard
+            asset: Godot_v4.3-stable_linux.x86_64.zip
+            args: ''
+          - version: '4.4.1'
+            flavor: dotnet
+            asset: Godot_v4.4.1-stable_mono_linux_x86_64.zip
+            args: '--csharp --sdk-version 4.4.1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        if: matrix.flavor == 'dotnet'
+        with:
+          dotnet-version: '8.0.x'
+      - name: Download official Godot build
+        env:
+          VERSION: ${{ matrix.version }}
+          ASSET: ${{ matrix.asset }}
+        run: |
+          curl --fail --location --retry 3 "https://github.com/godotengine/godot-builds/releases/download/${VERSION}-stable/${ASSET}" -o /tmp/godot.zip
+          unzip -q /tmp/godot.zip -d /tmp/godot
+          binary=$(find /tmp/godot -type f -name 'Godot_v*' | head -n 1)
+          test -n "$binary"
+          chmod +x "$binary"
+          echo "GODOT_BIN=$binary" >> "$GITHUB_ENV"
+      - name: Real editor and runtime bridge smoke test
+        run: python3 tests/bridge_smoke.py --godot "$GODOT_BIN" ${{ matrix.args }}

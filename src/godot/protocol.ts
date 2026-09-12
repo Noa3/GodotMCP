@@ -6,14 +6,13 @@ export interface GodotRequest {
   tool: string;
   params: Record<string, unknown>;
   timeoutMs: number;
+  token?: string;
 }
-
 export interface GodotError {
   code: string;
   message: string;
   details: Record<string, unknown>;
 }
-
 export interface GodotResponse {
   id: string;
   type: 'response';
@@ -21,21 +20,19 @@ export interface GodotResponse {
   result: unknown;
   error: GodotError | null;
 }
-
 export const GodotRequestSchema = z.object({
-  id: z.string().min(1),
+  id: z.string().min(1).max(128),
   type: z.literal('request'),
   tool: z.string().min(1),
   params: z.record(z.unknown()),
   timeoutMs: z.number().int().positive(),
+  token: z.string().min(32).max(256).optional(),
 });
-
 export const GodotErrorSchema = z.object({
   code: z.string().min(1),
   message: z.string().min(1),
   details: z.record(z.unknown()),
 });
-
 export const GodotResponseSchema = z.object({
   id: z.string().min(1),
   type: z.literal('response'),
