@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
+import { performance } from 'node:perf_hooks';
 import type { GodotResponse } from './protocol';
 
 export type GodotConnectionState = 'disconnected' | 'connecting' | 'connected' | 'degraded';
@@ -42,9 +43,8 @@ export class GodotClient extends EventEmitter {
   public constructor(options: GodotClientOptions) {
     super();
     if (!Number.isInteger(options.port) || options.port < 1 || options.port > 65535
-      || !Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0) {
-      throw new Error('Invalid bridge port or timeout');
-    }
+      || !Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0) throw new Error('Invalid bridge port or timeout');
+    if (!['127.0.0.1', '::1', 'localhost'].includes(options.host)) throw new Error('Only loopback Godot bridges are supported');
     this.options = options;
   }
 
@@ -72,7 +72,7 @@ export class GodotClient extends EventEmitter {
       this.finishConnect = null;
       this.connecting = null;
     };
-    socket.setEncoding('utf8'); // Node's decoder preserves split UTF-8 characters.
+    socket.setEncoding('utf8');
     socket.on('connect', () => {
       if (this.socket !== socket || this.manualDisconnect) { socket.destroy(); return; }
       socket.setNoDelay(true);
@@ -98,12 +98,11 @@ export class GodotClient extends EventEmitter {
       }
     });
     socket.on('error', (error) => {
-      // Do not log raw frames: they can contain credentials or project data.
       this.options.logger.debug({ message: error.message, client: this.options.clientName }, 'Godot TCP error');
     });
     socket.on('close', () => {
       clearTimeout(timer);
-      if (this.socket !== socket) return; // A stale socket must not clear a newer connection.
+      if (this.socket !== socket) return;
       finish();
       this.socket = null;
       this.buffer = '';
@@ -111,7 +110,8 @@ export class GodotClient extends EventEmitter {
       this.setState(this.manualDisconnect ? 'disconnected' : 'degraded');
       if (!this.manualDisconnect) this.scheduleReconnect();
     });
-    socket.connect({ host: this.options.host, port: this.options.port });
+    // Resolve localhost explicitly to loopback; do not trust a hosts/DNS alias for this private transport.
+    socket.connect({ host: this.options.host === 'localhost' ? '127.0.0.1' : this.options.host, port: this.options.port });
     return attempt;
   }
 
@@ -134,22 +134,33 @@ export class GodotClient extends EventEmitter {
     const id = randomUUID();
     if (this.manualDisconnect) return this.failure(id, 'GODOT_NOT_CONNECTED', 'Bridge disconnected');
     if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return this.failure(id, 'VALIDATION_ERROR', 'Invalid timeout');
-    if (this.state !== 'connected') await this.connect();
+    const deadline = performance.now() + timeoutMs;
+    // Connection setup consumes the same deadline. A request must not be sent after its caller timed out.
+    if (this.state !== 'connected') {
+      let timer: NodeJS.Timeout | undefined;
+      try {
+        const connectedInTime = await Promise.race([
+          this.connect().then(() => true),
+          new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(false), timeoutMs); }),
+        ]);
+        if (!connectedInTime) return this.failure(id, 'TIMEOUT', 'Connection deadline expired; request was not sent');
+      } finally { if (timer) clearTimeout(timer); }
+    }
     const socket = this.socket;
-    if (!socket || this.state !== 'connected') return this.failure(id, 'GODOT_NOT_CONNECTED', 'Bridge is not connected');
+    if (this.manualDisconnect || !socket || this.state !== 'connected') return this.failure(id, 'GODOT_NOT_CONNECTED', 'Bridge is not connected');
     if (this.pending.size >= MAX_PENDING) return this.failure(id, 'BUSY', 'Too many pending bridge requests');
     let frame: string;
     try {
-      frame = `${JSON.stringify({ id, type: 'request', tool, params, timeoutMs, token: this.readToken() })}\n`;
-    } catch {
-      return this.failure(id, 'VALIDATION_ERROR', 'Request must be JSON serializable');
-    }
+      frame = `${JSON.stringify({ id, type: 'request', protocolVersion: 1, tool, params, timeoutMs, token: this.readToken() })}\n`;
+    } catch { return this.failure(id, 'VALIDATION_ERROR', 'Request must be JSON serializable'); }
     if (Buffer.byteLength(frame) > MAX_REQUEST_BYTES) return this.failure(id, 'VALIDATION_ERROR', 'Request exceeded the frame limit');
+    const remaining = Math.floor(deadline - performance.now());
+    if (remaining <= 0) return this.failure(id, 'TIMEOUT', 'Deadline expired; request was not sent');
     return new Promise<GodotResponse>((resolve) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         resolve(this.failure(id, 'TIMEOUT', `Timed out waiting for ${tool}; outcome may be unknown, request was not replayed`));
-      }, timeoutMs);
+      }, remaining);
       this.pending.set(id, { resolve, timer });
       socket.write(frame, (error) => {
         if (error) this.settle(this.failure(id, 'GODOT_NOT_CONNECTED', 'Could not write bridge request'));
@@ -162,9 +173,8 @@ export class GodotClient extends EventEmitter {
     if (override !== undefined) return override.trim();
     const root = this.options.projectRoot ?? process.env.GODOT_PROJECT_ROOT;
     if (!root) return undefined;
-    try {
-      return readFileSync(path.join(root, '.godot', 'godot_universal_mcp', 'token'), 'utf8').trim();
-    } catch { return undefined; } // The editor may not have started yet; retry on the next request.
+    try { return readFileSync(path.join(root, '.godot', 'godot_universal_mcp', 'token'), 'utf8').trim(); }
+    catch { return undefined; }
   }
 
   private handleLine(line: string): boolean {
@@ -184,31 +194,21 @@ export class GodotClient extends EventEmitter {
 
   private settle(response: GodotResponse): void {
     const pending = this.pending.get(response.id);
-    if (!pending) return; // Late/unknown replies are never applied to another request.
+    if (!pending) return;
     clearTimeout(pending.timer);
     this.pending.delete(response.id);
     pending.resolve(response);
   }
-
   private failure(id: string, code: string, message: string): GodotResponse {
     return { id, type: 'response', ok: false, result: null, error: { code, message, details: this.getStatus() } };
   }
-
   private failPending(code: string, message: string): void {
     for (const id of this.pending.keys()) this.settle(this.failure(id, code, message));
   }
-
   private scheduleReconnect(): void {
     if (this.manualDisconnect || this.reconnectTimer) return;
-    this.reconnectTimer = setTimeout(() => {
-      this.reconnectTimer = null;
-      void this.connect();
-    }, this.options.reconnectIntervalMs ?? 3000);
+    this.reconnectTimer = setTimeout(() => { this.reconnectTimer = null; void this.connect(); }, this.options.reconnectIntervalMs ?? 3000);
     this.reconnectTimer.unref();
   }
-
-  private setState(state: GodotConnectionState): void {
-    this.state = state;
-    this.emit('status', this.getStatus());
-  }
+  private setState(state: GodotConnectionState): void { this.state = state; this.emit('status', this.getStatus()); }
 }

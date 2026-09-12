@@ -10,8 +10,11 @@ func _enter_tree() -> void:
 	_add_setting("editor_port", TYPE_INT, 9500)
 	_add_setting("runtime_port", TYPE_INT, 9501)
 	_add_setting("runtime_enabled", TYPE_BOOL, false)
-	_add_setting("server_entry", TYPE_STRING, "")
-	# Construct the script instance; do not call EditorPlugin methods on a plain Node.
+	_add_setting("allow_editor_property_writes", TYPE_BOOL, false)
+	_add_setting("allow_runtime_property_writes", TYPE_BOOL, false)
+	_add_setting("allow_runtime_input", TYPE_BOOL, false)
+	_add_setting("allowed_input_actions", TYPE_PACKED_STRING_ARRAY, PackedStringArray())
+	_add_setting("allow_snapshot_providers", TYPE_BOOL, false)
 	editor_bridge = preload("res://addons/godot_universal_mcp/editor_bridge.gd").new()
 	editor_bridge.name = "GodotUniversalMCPBridge"
 	editor_bridge.set("undo_redo", get_undo_redo())
@@ -51,7 +54,7 @@ func _set_runtime_enabled(enabled: bool) -> void:
 func enable_autoload() -> void:
 	var existing: String = ProjectSettings.get_setting("autoload/" + AUTOLOAD_NAME, "")
 	if not existing.is_empty() and existing != "*" + AUTOLOAD_PATH:
-		push_error("[GodotUniversalMCP] Autoload name is already used by another script")
+		push_error("[GodotUniversalMCP] Autoload name belongs to another script")
 		return
 	ProjectSettings.set_setting("godot_universal_mcp/runtime_enabled", true)
 	if existing.is_empty():
@@ -59,7 +62,6 @@ func enable_autoload() -> void:
 	ProjectSettings.save()
 
 func disable_autoload() -> void:
-	# Read persisted state: a process-local boolean is wrong after an editor restart.
 	if ProjectSettings.get_setting("autoload/" + AUTOLOAD_NAME, "") == "*" + AUTOLOAD_PATH:
 		remove_autoload_singleton(AUTOLOAD_NAME)
 	ProjectSettings.set_setting("godot_universal_mcp/runtime_enabled", false)
