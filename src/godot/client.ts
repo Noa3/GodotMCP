@@ -1,225 +1,210 @@
 import { EventEmitter } from 'node:events';
+import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import net from 'node:net';
-import { setTimeout as delay } from 'node:timers/promises';
-import { v4 as uuidv4 } from 'uuid';
-import type { Logger } from 'pino';
-import type { GodotRequest, GodotResponse } from './protocol';
-import { GodotResponseSchema } from './protocol';
-import { ERROR_CODES } from '../utils/errors';
-import { logger } from '../utils/logger';
+import path from 'node:path';
+import type { GodotResponse } from './protocol';
 
 export type GodotConnectionState = 'disconnected' | 'connecting' | 'connected' | 'degraded';
-
 export interface GodotClientOptions {
   host: string;
   port: number;
   timeoutMs: number;
   reconnectIntervalMs?: number;
-  logger: Logger;
+  projectRoot?: string;
+  token?: string;
+  logger: {
+    debug: (details: Record<string, unknown>, message: string) => void;
+    warn: (details: Record<string, unknown>, message: string) => void;
+  };
   clientName: string;
 }
-
 interface PendingRequest {
   resolve: (response: GodotResponse) => void;
   timer: NodeJS.Timeout;
 }
+const MAX_REQUEST_BYTES = 1024 * 1024;
+const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
+const MAX_PENDING = 128;
 
+/** One bounded connection per bridge. Requests are never replayed after a timeout. */
 export class GodotClient extends EventEmitter {
   private socket: net.Socket | null = null;
+  private connecting: Promise<void> | null = null;
+  private finishConnect: (() => void) | null = null;
   private readonly pending = new Map<string, PendingRequest>();
   private buffer = '';
   private reconnectTimer: NodeJS.Timeout | null = null;
   private state: GodotConnectionState = 'degraded';
   private manualDisconnect = false;
-  private _hasEverConnected = false;
-  private _reconnectAttempts = 0;
-  private readonly _maxReconnectAttempts = 5;
+  private readonly options: GodotClientOptions;
 
-  public constructor(private readonly options: GodotClientOptions) {
+  public constructor(options: GodotClientOptions) {
     super();
+    if (!Number.isInteger(options.port) || options.port < 1 || options.port > 65535
+      || !Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0) {
+      throw new Error('Invalid bridge port or timeout');
+    }
+    this.options = options;
   }
 
   public getStatus(): { state: GodotConnectionState; connected: boolean; port: number; host: string } {
-    return {
-      state: this.state,
-      connected: this.state === 'connected',
-      port: this.options.port,
-      host: this.options.host,
-    };
+    return { state: this.state, connected: this.state === 'connected', port: this.options.port, host: this.options.host };
   }
 
-  public async connect(): Promise<void> {
-    if (this.socket || this.state === 'connecting' || this.state === 'connected') {
-      return;
-    }
-
-    // Stop reconnecting if we've never connected and hit max attempts
-    if (!this._hasEverConnected && this._reconnectAttempts >= this._maxReconnectAttempts) {
-      logger.error({ client: this.options.clientName, attempts: this._reconnectAttempts }, `[GIVE_UP] ${this.options.clientName} bridge unreachable after ${this._reconnectAttempts} attempts. Is the Godot editor running with the MCP plugin enabled?`);
-      this.setState('degraded');
-      return;
-    }
-
+  public connect(): Promise<void> {
+    if (this.connecting) return this.connecting;
+    if (this.socket) return Promise.resolve();
     this.manualDisconnect = false;
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
     this.setState('connecting');
-    logger.info({ client: this.options.clientName, attempt: this._reconnectAttempts + 1 }, `[CONNECTING] ${this.options.clientName} bridge -> ${this.options.host}:${this.options.port}`);
-
-    await new Promise<void>((resolve) => {
-      const socket = net.createConnection({ host: this.options.host, port: this.options.port });
-      socket.setEncoding('utf8');
-      socket.on('connect', () => {
-        this.socket = socket;
-        this.buffer = '';
-        this.attachSocket(socket);
-        this.setState('connected');
-        this._hasEverConnected = true;
-        this._reconnectAttempts = 0;
-        logger.info({ client: this.options.clientName, port: this.options.port }, `[CONNECTED] ${this.options.clientName} bridge connected on ${this.options.host}:${this.options.port}`);
-        this.emit('connected', { client: this.options.clientName, port: this.options.port });
-        resolve();
-      });
-      socket.on('error', (error) => {
-        this._reconnectAttempts++;
-        this.options.logger.debug({ err: error, client: this.options.clientName, attempt: this._reconnectAttempts }, 'Godot TCP connect failed');
-        socket.destroy();
-        this.socket = null;
-        this.setState('degraded');
-        this.scheduleReconnect();
-        resolve();
-      });
+    const socket = new net.Socket();
+    this.socket = socket;
+    this.buffer = '';
+    this.connecting = new Promise<void>((resolve) => { this.finishConnect = resolve; });
+    const attempt = this.connecting;
+    const timer = setTimeout(() => socket.destroy(), this.options.timeoutMs);
+    const finish = (): void => {
+      clearTimeout(timer);
+      if (this.socket !== socket) return;
+      this.finishConnect?.();
+      this.finishConnect = null;
+      this.connecting = null;
+    };
+    socket.setEncoding('utf8'); // Node's decoder preserves split UTF-8 characters.
+    socket.on('connect', () => {
+      if (this.socket !== socket || this.manualDisconnect) { socket.destroy(); return; }
+      socket.setNoDelay(true);
+      this.setState('connected');
+      finish();
     });
+    socket.on('data', (chunk: string) => {
+      if (this.socket !== socket) return;
+      this.buffer += chunk;
+      let newline: number;
+      while ((newline = this.buffer.indexOf('\n')) >= 0) {
+        const line = this.buffer.slice(0, newline);
+        this.buffer = this.buffer.slice(newline + 1);
+        if (Buffer.byteLength(line) > MAX_RESPONSE_BYTES || (line.trim() && !this.handleLine(line))) {
+          this.failPending('INVALID_RESPONSE', 'Invalid or oversized bridge response');
+          socket.destroy();
+          return;
+        }
+      }
+      if (Buffer.byteLength(this.buffer) > MAX_RESPONSE_BYTES) {
+        this.failPending('INVALID_RESPONSE', 'Bridge response exceeded the frame limit');
+        socket.destroy();
+      }
+    });
+    socket.on('error', (error) => {
+      // Do not log raw frames: they can contain credentials or project data.
+      this.options.logger.debug({ message: error.message, client: this.options.clientName }, 'Godot TCP error');
+    });
+    socket.on('close', () => {
+      clearTimeout(timer);
+      if (this.socket !== socket) return; // A stale socket must not clear a newer connection.
+      finish();
+      this.socket = null;
+      this.buffer = '';
+      this.failPending('GODOT_NOT_CONNECTED', 'Bridge connection closed; requests were not replayed');
+      this.setState(this.manualDisconnect ? 'disconnected' : 'degraded');
+      if (!this.manualDisconnect) this.scheduleReconnect();
+    });
+    socket.connect({ host: this.options.host, port: this.options.port });
+    return attempt;
   }
 
   public async disconnect(): Promise<void> {
     this.manualDisconnect = true;
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
-
-    if (this.socket) {
-      this.socket.destroy();
-      this.socket = null;
-    }
-
-    for (const [id, pending] of this.pending.entries()) {
-      clearTimeout(pending.timer);
-      pending.resolve(this.notConnectedResponse(id));
-      this.pending.delete(id);
-    }
-
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
+    const socket = this.socket;
+    this.socket = null;
+    socket?.destroy();
+    this.finishConnect?.();
+    this.finishConnect = null;
+    this.connecting = null;
+    this.buffer = '';
+    this.failPending('GODOT_NOT_CONNECTED', 'Bridge disconnected');
     this.setState('disconnected');
-    logger.info({ client: this.options.clientName }, `[DISCONNECTED] ${this.options.clientName} bridge`);
-    this.emit('disconnected', { client: this.options.clientName });
-    await delay(0);
   }
 
   public async sendRequest(tool: string, params: Record<string, unknown>, timeoutMs = this.options.timeoutMs): Promise<GodotResponse> {
-    if (this.state !== 'connected' || !this.socket) {
-      void this.connect();
-      return this.notConnectedResponse(uuidv4());
+    const id = randomUUID();
+    if (this.manualDisconnect) return this.failure(id, 'GODOT_NOT_CONNECTED', 'Bridge disconnected');
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return this.failure(id, 'VALIDATION_ERROR', 'Invalid timeout');
+    if (this.state !== 'connected') await this.connect();
+    const socket = this.socket;
+    if (!socket || this.state !== 'connected') return this.failure(id, 'GODOT_NOT_CONNECTED', 'Bridge is not connected');
+    if (this.pending.size >= MAX_PENDING) return this.failure(id, 'BUSY', 'Too many pending bridge requests');
+    let frame: string;
+    try {
+      frame = `${JSON.stringify({ id, type: 'request', tool, params, timeoutMs, token: this.readToken() })}\n`;
+    } catch {
+      return this.failure(id, 'VALIDATION_ERROR', 'Request must be JSON serializable');
     }
-
-    const request: GodotRequest = {
-      id: uuidv4(),
-      type: 'request',
-      tool,
-      params,
-      timeoutMs,
-    };
-
+    if (Buffer.byteLength(frame) > MAX_REQUEST_BYTES) return this.failure(id, 'VALIDATION_ERROR', 'Request exceeded the frame limit');
     return new Promise<GodotResponse>((resolve) => {
       const timer = setTimeout(() => {
-        this.pending.delete(request.id);
-        resolve({
-          id: request.id,
-          type: 'response',
-          ok: false,
-          result: null,
-          error: {
-            code: ERROR_CODES.TIMEOUT,
-            message: `Timed out waiting for ${tool}`,
-            details: { timeoutMs },
-          },
-        });
-      }, timeoutMs);
-
-      this.pending.set(request.id, { resolve, timer });
-      this.socket?.write(`${JSON.stringify(request)}\n`);
-    });
-  }
-
-  private attachSocket(socket: net.Socket): void {
-    socket.on('data', (chunk: string) => {
-      this.buffer += chunk;
-      let newlineIndex = this.buffer.indexOf('\n');
-      while (newlineIndex >= 0) {
-        const line = this.buffer.slice(0, newlineIndex).trim();
-        this.buffer = this.buffer.slice(newlineIndex + 1);
-        if (line) {
-          this.handleLine(line);
-        }
-        newlineIndex = this.buffer.indexOf('\n');
-      }
-    });
-
-    socket.on('close', () => {
-      this.socket = null;
-      this.setState(this.manualDisconnect ? 'disconnected' : 'degraded');
-      for (const [id, pending] of this.pending.entries()) {
-        clearTimeout(pending.timer);
-        pending.resolve(this.notConnectedResponse(id));
         this.pending.delete(id);
-      }
-      if (!this.manualDisconnect) {
-        this.scheduleReconnect();
-      }
-    });
-
-    socket.on('error', (error) => {
-      this.options.logger.debug({ err: error, client: this.options.clientName }, 'Godot TCP socket error');
+        resolve(this.failure(id, 'TIMEOUT', `Timed out waiting for ${tool}; outcome may be unknown, request was not replayed`));
+      }, timeoutMs);
+      this.pending.set(id, { resolve, timer });
+      socket.write(frame, (error) => {
+        if (error) this.settle(this.failure(id, 'GODOT_NOT_CONNECTED', 'Could not write bridge request'));
+      });
     });
   }
 
-  private handleLine(line: string): void {
+  private readToken(): string | undefined {
+    const override = this.options.token ?? process.env.GODOT_MCP_TOKEN;
+    if (override !== undefined) return override.trim();
+    const root = this.options.projectRoot ?? process.env.GODOT_PROJECT_ROOT;
+    if (!root) return undefined;
     try {
-      const payload = GodotResponseSchema.parse(JSON.parse(line)) as GodotResponse;
-      const pending = this.pending.get(payload.id);
-      if (!pending) {
-        return;
-      }
-      clearTimeout(pending.timer);
-      pending.resolve(payload);
-      this.pending.delete(payload.id);
-    } catch (error) {
-      this.options.logger.warn({ err: error, line, client: this.options.clientName }, 'Invalid Godot response');
-    }
+      return readFileSync(path.join(root, '.godot', 'godot_universal_mcp', 'token'), 'utf8').trim();
+    } catch { return undefined; } // The editor may not have started yet; retry on the next request.
   }
 
-  private notConnectedResponse(id: string): GodotResponse {
-    return {
-      id,
-      type: 'response',
-      ok: false,
-      result: null,
-      error: {
-        code: ERROR_CODES.GODOT_NOT_CONNECTED,
-        message: `${this.options.clientName} bridge is not connected`,
-        details: this.getStatus(),
-      },
-    };
+  private handleLine(line: string): boolean {
+    try {
+      const value: unknown = JSON.parse(line);
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+      const response = value as GodotResponse;
+      if (typeof response.id !== 'string' || !response.id || response.type !== 'response' || typeof response.ok !== 'boolean') return false;
+      if (response.error !== null && (!response.error || typeof response.error.code !== 'string'
+        || typeof response.error.message !== 'string' || !response.error.details
+        || typeof response.error.details !== 'object' || Array.isArray(response.error.details))) return false;
+      if (!response.ok && response.error === null) return false;
+      this.settle(response);
+      return true;
+    } catch { return false; }
+  }
+
+  private settle(response: GodotResponse): void {
+    const pending = this.pending.get(response.id);
+    if (!pending) return; // Late/unknown replies are never applied to another request.
+    clearTimeout(pending.timer);
+    this.pending.delete(response.id);
+    pending.resolve(response);
+  }
+
+  private failure(id: string, code: string, message: string): GodotResponse {
+    return { id, type: 'response', ok: false, result: null, error: { code, message, details: this.getStatus() } };
+  }
+
+  private failPending(code: string, message: string): void {
+    for (const id of this.pending.keys()) this.settle(this.failure(id, code, message));
   }
 
   private scheduleReconnect(): void {
-    if (this.manualDisconnect || this.reconnectTimer) {
-      return;
-    }
-    const interval = this.options.reconnectIntervalMs ?? 5_000;
-    logger.info({ client: this.options.clientName, attempt: this._reconnectAttempts + 1, intervalMs: interval }, `[RECONNECT] Scheduling reconnect for ${this.options.clientName} bridge in ${interval}ms (attempt ${this._reconnectAttempts + 1}/${this._maxReconnectAttempts})`);
+    if (this.manualDisconnect || this.reconnectTimer) return;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       void this.connect();
-    }, interval);
+    }, this.options.reconnectIntervalMs ?? 3000);
+    this.reconnectTimer.unref();
   }
 
   private setState(state: GodotConnectionState): void {
