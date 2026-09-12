@@ -40,6 +40,7 @@ async function createContext(projectRoot: string): Promise<McpRuntimeContext> {
   const logger = createLogger();
   let currentConfig = await readProjectConfig(projectRoot);
   const editorClient = new GodotClient({
+    projectRoot,
     host: currentConfig.tcp.host,
     port: currentConfig.tcp.editorPort,
     timeoutMs: currentConfig.tcp.timeoutMs,
@@ -48,6 +49,7 @@ async function createContext(projectRoot: string): Promise<McpRuntimeContext> {
     clientName: 'editor',
   });
   const runtimeClient = new GodotClient({
+    projectRoot,
     host: currentConfig.tcp.host,
     port: currentConfig.tcp.runtimePort,
     timeoutMs: currentConfig.tcp.timeoutMs,
@@ -83,65 +85,32 @@ export async function createMcpServer(options: CreateServerOptions = {}): Promis
   const prompts = buildPromptDefinitions(context);
 
   const server = new Server(
-    {
-      name: 'godot-universal-mcp',
-      version: '0.1.0',
-    },
-    {
-      capabilities: {
-        tools: {},
-        resources: {},
-        prompts: {},
-      },
-    },
+    { name: 'godot-universal-mcp', version: '0.1.0' },
+    { capabilities: { tools: {}, resources: {}, prompts: {} } },
   );
-
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: registry.list().map((tool) => ({
-      name: tool.name,
-      title: tool.title,
-      description: tool.description,
-      inputSchema: tool.inputSchema,
+      name: tool.name, title: tool.title, description: tool.description, inputSchema: tool.inputSchema,
+      annotations: { readOnlyHint: tool.riskLevel === 'safe', destructiveHint: tool.riskLevel === 'destructive' },
     })),
   }));
-
   server.setRequestHandler(CallToolRequestSchema, async (request) => registry.call(request.params.name, request.params.arguments ?? {}));
-
   server.setRequestHandler(ListResourcesRequestSchema, async () => ({
-    resources: resources.map((resource) => ({
-      uri: resource.uri,
-      name: resource.name,
-      description: resource.description,
-      mimeType: resource.mimeType,
-    })),
+    resources: resources.map((resource) => ({ uri: resource.uri, name: resource.name, description: resource.description, mimeType: resource.mimeType })),
   }));
-
   server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
     const resource = resources.find((entry) => entry.uri === request.params.uri);
-    if (!resource) {
-      throw new Error(`Unknown resource: ${request.params.uri}`);
-    }
-    return {
-      contents: [{ uri: resource.uri, mimeType: resource.mimeType, text: await resource.read() }],
-    };
+    if (!resource) throw new Error(`Unknown resource: ${request.params.uri}`);
+    return { contents: [{ uri: resource.uri, mimeType: resource.mimeType, text: await resource.read() }] };
   });
-
   server.setRequestHandler(ListPromptsRequestSchema, async () => ({
-    prompts: prompts.map((prompt) => ({
-      name: prompt.name,
-      description: prompt.description,
-      arguments: prompt.arguments,
-    })),
+    prompts: prompts.map((prompt) => ({ name: prompt.name, description: prompt.description, arguments: prompt.arguments })),
   }));
-
   server.setRequestHandler(GetPromptRequestSchema, async (request) => {
     const prompt = prompts.find((entry) => entry.name === request.params.name);
-    if (!prompt) {
-      throw new Error(`Unknown prompt: ${request.params.name}`);
-    }
+    if (!prompt) throw new Error(`Unknown prompt: ${request.params.name}`);
     return prompt.build((request.params.arguments ?? {}) as Record<string, string>);
   });
-
   const transport = new StdioServerTransport();
   return { server, transport, context };
 }
@@ -149,17 +118,11 @@ export async function createMcpServer(options: CreateServerOptions = {}): Promis
 export async function startMcpServer(options: CreateServerOptions = {}): Promise<void> {
   const { server, transport, context } = await createMcpServer(options);
   await server.connect(transport);
-
   const shutdown = async (): Promise<void> => {
     await context.editorClient.disconnect();
     await context.runtimeClient.disconnect();
     await server.close();
   };
-
-  process.once('SIGINT', () => {
-    void shutdown().finally(() => process.exit(0));
-  });
-  process.once('SIGTERM', () => {
-    void shutdown().finally(() => process.exit(0));
-  });
+  process.once('SIGINT', () => { void shutdown().finally(() => process.exit(0)); });
+  process.once('SIGTERM', () => { void shutdown().finally(() => process.exit(0)); });
 }
