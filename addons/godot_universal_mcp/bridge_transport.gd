@@ -19,31 +19,45 @@ var last_error := "Not started"
 static func read_token(create: bool = false) -> String:
 	var token := OS.get_environment("GODOT_MCP_TOKEN").strip_edges()
 	if not token.is_empty():
-		return token if token.length() >= 32 and token.length() <= 256 else ""
-	if FileAccess.file_exists(TOKEN_PATH):
-		token = FileAccess.get_file_as_string(TOKEN_PATH).strip_edges()
+		if token.length() < 32 or token.length() > 256:
+			return _token_error("GODOT_MCP_TOKEN must contain 32 to 256 characters")
+		return token
+	var token_path := ProjectSettings.globalize_path(TOKEN_PATH)
+	var directory := token_path.get_base_dir()
+	if FileAccess.file_exists(token_path):
+		token = FileAccess.get_file_as_string(token_path).strip_edges()
 		if token.length() >= 32 and token.length() <= 256:
 			return token
 	if not create:
-		return ""
-	if DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(TOKEN_PATH.get_base_dir())) != OK:
-		return ""
-	# Lock the directory before creating a file that will contain the secret.
-	if OS.get_name() != "Windows" and FileAccess.set_unix_permissions(TOKEN_PATH.get_base_dir(), 448) != OK:
-		return ""
+		return _token_error("Project token is missing; start the editor addon first")
+	if DirAccess.make_dir_recursive_absolute(directory) != OK:
+		return _token_error("Cannot create the project token directory")
+	# The directory protects both the final credential and Godot's safe-save temp file.
+	if OS.get_name() != "Windows" and FileAccess.set_unix_permissions(directory, 448) != OK:
+		return _token_error("Cannot restrict token directory permissions")
 	var bytes := Crypto.new().generate_random_bytes(32)
 	if bytes.size() != 32:
-		return ""
+		return _token_error("Could not generate a cryptographic project token")
 	token = bytes.hex_encode()
-	var file := FileAccess.open(TOKEN_PATH, FileAccess.WRITE)
+	var file := FileAccess.open(token_path, FileAccess.WRITE)
 	if file == null:
-		return ""
-	if OS.get_name() != "Windows" and FileAccess.set_unix_permissions(TOKEN_PATH, 384) != OK:
-		file.close()
-		return ""
+		return _token_error("Cannot open project token file for writing")
 	file.store_string(token)
+	file.flush()
+	var write_error := file.get_error()
+	# In editor safe-save mode the final path does not exist until close() renames it.
 	file.close()
+	if write_error != OK:
+		return _token_error("Could not write the project token")
+	if OS.get_name() != "Windows" and FileAccess.set_unix_permissions(token_path, 384) != OK:
+		return _token_error("Cannot restrict token file permissions")
+	if not FileAccess.file_exists(token_path) or FileAccess.get_file_as_string(token_path).strip_edges() != token:
+		return _token_error("Project token could not be verified after saving")
 	return token
+
+static func _token_error(message: String) -> String:
+	push_error("[GodotUniversalMCP] " + message)
+	return ""
 
 func start(port: int, handler: Callable, token: String) -> Error:
 	stop()
