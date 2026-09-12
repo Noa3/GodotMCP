@@ -65,6 +65,8 @@ jobs:
           test -n "$binary"
           chmod +x "$binary"
           echo "GODOT_BIN=$binary" >> "$GITHUB_ENV"
+      - name: Shared value budget and path regression
+        run: python3 tests/codec_smoke.py --godot "$GODOT_BIN"
       - name: Real editor and runtime bridge smoke test
         if: matrix.flavor != 'rendered-mcp'
         run: python3 tests/bridge_smoke.py --godot "$GODOT_BIN" ${{ matrix.args }}

@@ -16,5 +16,9 @@ lines.push('', 'The remaining managed-process and offline tools are enumerated b
 const content = lines.join('\n');
 const output = path.resolve(__dirname, '../docs/TOOL_REFERENCE.md');
 if (process.argv.includes('--check')) {
-  if (fs.readFileSync(output, 'utf8') !== content) { console.error('Tool reference is stale. Run node scripts/generate-tool-reference.cjs'); process.exitCode = 1; }
+  // Git's Windows checkout may use CRLF; compare content, not platform line endings.
+  if (fs.readFileSync(output, 'utf8').replace(/\r\n/g, '\n') !== content) {
+    console.error('Tool reference is stale. Run node scripts/generate-tool-reference.cjs');
+    process.exitCode = 1;
+  }
 } else fs.writeFileSync(output, content);
